@@ -1,0 +1,22 @@
+{
+  "packages": [
+    {
+      "name": "Daily 250MB",
+      "price": "5.00",
+      "description": "Quick social browsing package",
+      "validity": "1 Day"
+    },
+    {
+      "name": "Weekly 1GB",
+      "price": "20.00",
+      "description": "Best for messaging and light browsing",
+      "validity": "7 Days"
+    },
+    {
+      "name": "Monthly 3GB",
+      "price": "50.00",
+      "description": "Value plan for heavier use",
+      "validity": "30 Days"
+    }
+  ]
+}
