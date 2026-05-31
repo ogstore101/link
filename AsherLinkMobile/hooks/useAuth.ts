@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, SetStateAction } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function useAuth() {
@@ -15,7 +15,7 @@ export default function useAuth() {
     })();
   }, []);
 
-  const login = async (u) => {
+  const login = async (u: SetStateAction<null>) => {
     setUser(u);
     await AsyncStorage.setItem('user', JSON.stringify(u));
   };
