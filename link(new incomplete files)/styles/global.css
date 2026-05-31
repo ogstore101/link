@@ -1,0 +1,35 @@
+/* Copied essential rules from web styles/main.css for global usage */
+.button {
+  background: linear-gradient(135deg, #050505, #7f5af0);
+  width: 100%;
+  border-radius: 20px;
+  font-weight: 600;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #050505 0%, #7f5af0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.loader {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-bottom-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  box-sizing: border-box;
+  animation: rotation 1s linear infinite;
+}
+@keyframes rotation { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+
+.card {
+  background: #fff;
+  border-radius: 20px;
+  padding: 1.5rem 1rem;
+}
+
+.bg-app {
+  background: linear-gradient(180deg, #0f172a 0%, #111827 70%);
+}
