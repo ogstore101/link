@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   Platform,
   Image,
   ImageBackground,
-  Animated,
+  ActivityIndicator,
 } from 'react-native';
 import {
   Wifi,
@@ -30,6 +30,16 @@ import {
   UserPlus,
   ArrowRight,
 } from 'lucide-react-native';
+import {
+  confirmPurchase as apiConfirmPurchase,
+  connectTrial as apiConnectTrial,
+  fetchAndRenderUserData,
+  fetchUserOffers,
+  getBundlesData,
+  handleVoucher,
+  startTrialAd as apiStartTrialAd
+} from '../api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const BUNDLES = [
   { id: 'p1', name: 'Student Lite', volume: '1GB', price: 10, validity: '24 Hours' },
@@ -44,6 +54,52 @@ const OFFERS = [
   { id: 'o3', title: 'Trial Connect', desc: '30 mins daily free access' },
 ];
 
+const DEFAULT_MAC = '00:11:22:33:44:55';
+const DEFAULT_LANGUAGE = 'en';
+
+const translations = {
+  en: {
+    welcome: 'Welcome Back',
+    subtitle: 'Fast, reliable internet for your neighborhood.',
+    settings: 'Settings',
+    menu: 'Menu',
+    dataSaver: 'Data Saver',
+    lang: 'Language',
+    history: 'Transaction History',
+    status: 'Network Status',
+    recharge: 'Recharge',
+    balance: 'Balance',
+    lastBundle: 'Last Bundle',
+    totalUsed: 'Data Used',
+    sessionTime: 'Session Time'
+  },
+  sotho: {
+    welcome: 'Dumela',
+    subtitle: 'Intanete e tshepahalang, e potlakileng ya setjhaba.',
+    settings: 'Tukiso',
+    menu: 'Menyu',
+    dataSaver: 'Tshebediso e tlase ya data',
+    lang: 'Puo',
+    history: 'Hisitory',
+    status: 'Isimo Senethiwekhi',
+    recharge: 'Recharge',
+    balance: 'Balance',
+    lastBundle: 'Last Bundle',
+    totalUsed: 'Data Used',
+    sessionTime: 'Session Time'
+  }
+};
+
+const formatActivePeriod = (text: string | string[]) => {
+  if (typeof text !== 'string') return text;
+  if (text.includes('in')) return `${text.slice(0, -1)} ${Number(text.slice(0, -1)) > 1 ? 'minutes' : 'minute'}`;
+  if (text.includes('h')) return `${text.slice(0, -1)} ${Number(text.slice(0, -1)) > 1 ? 'hours' : 'hour'}`;
+  if (text.includes('d')) return `${text.slice(0, -1)} ${Number(text.slice(0, -1)) > 1 ? 'days' : 'day'}`;
+  if (text.includes('w')) return `${text.slice(0, -1)} ${Number(text.slice(0, -1)) > 1 ? 'Weeks' : 'Week'}`;
+  if (text.includes('m')) return `${text.slice(0, -1)} ${Number(text.slice(0, -1)) > 1 ? 'Months' : 'Month'}`;
+  return text;
+};
+
 export default function AsherLinkApp() {
   const [view, setView] = useState<'gateway' | 'dashboard'>('gateway');
   const [activeTab, setActiveTab] = useState<'home' | 'bundles' | 'settings'>('home');
@@ -57,7 +113,27 @@ export default function AsherLinkApp() {
     used: '1.2 GB',
     daysLeft: '3 Days',
     isConnected: false,
+    totalUsed: '0 KB',
+    sessionTime: '00:00:00',
+    lastBundle: 'None'
   });
+  const [tokenIconColor, setTokenIconColor] = useState('#94a3b8');
+  const [packages, setPackages] = useState<any[]>([]);
+  const [offers, setOffers] = useState<any[]>([]);
+  const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'error' } | null>(null);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalKind, setModalKind] = useState('');
+  const [bundleCategory, setBundleCategory] = useState('all');
+  const [selectedBundle, setSelectedBundle] = useState<any>(null);
+  const [dataSaver, setDataSaver] = useState(false);
+  const [autoConnect, setAutoConnect] = useState(false);
+  const [particles, setParticles] = useState(true);
+  const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
+  const [user, setUser] = useState(null);
+  const [trialActive, setTrialActive] = useState(false);
+  const [trialTimer, setTrialTimer] = useState(0);
+  const [trialAdData, setTrialAdData] = useState(null);
+  const isMounted = useRef(true);
   const [showPassword, setShowPassword] = useState(false);
   const [loginForm, setLoginForm] = useState({ identifier: '', password: '' });
 
@@ -84,6 +160,45 @@ export default function AsherLinkApp() {
       setLoading(false);
     }, 1000);
   };
+
+  const notify = (message: string, type: 'info' | 'success' | 'error' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3200);
+  };
+
+  const savePref = async (key: string, value: unknown) => {
+    if (!isMounted.current) return;
+    try {
+      await AsyncStorage.setItem(key, String(value));
+    } catch (_error) {
+      console.error('Failed to save pref', _error);
+    }
+  };
+
+  const refreshData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const userData: any = await fetchAndRenderUserData(DEFAULT_MAC);
+      if (userData.balance !== undefined) setBalance(userData.balance);
+      if (userData.usage) {
+        setStats((prevStats) => ({
+          ...prevStats,
+          totalUsed: userData.usage.total_used || prevStats.totalUsed,
+          sessionTime: userData.usage.session_time || prevStats.sessionTime,
+          lastBundle: userData.usage.last_bundle || prevStats.lastBundle
+        }));
+      }
+      const bundles = await getBundlesData();
+      setPackages(bundles.packages || []);
+      const offersData = await fetchUserOffers(DEFAULT_MAC);
+      setOffers(Array.isArray(offersData.offers) ? offersData.offers : []);
+    } catch (_error) {
+      notify('Unable to refresh data', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
 
   const handleAuth = () => {
     if (!loginForm.identifier.trim() || !loginForm.password.trim()) return;
@@ -118,6 +233,35 @@ export default function AsherLinkApp() {
     if (balance < bundle.price) return;
     setBalance(prev => prev - bundle.price);
     setModal(null);
+  };
+
+  const openModal = async (kind: 'bundles' | 'recharge' | 'adTimer' | string) => {
+    if (kind === 'bundles' && packages.length === 0) {
+      const bundles = await getBundlesData();
+      setPackages(bundles.packages || []);
+    }
+    setBundleCategory('all');
+    setSelectedBundle(null);
+    setModalKind(kind);
+    setModalVisible(true);
+  };
+
+  const closeModal = () => {
+    setModalVisible(false);
+    setSelectedBundle(null);
+  };
+
+  const loadUserPackages = async () => {
+    await openModal('bundles');
+  };
+
+  const renderBundlesM = (category: string) => {
+    setBundleCategory(category);
+    setSelectedBundle(null);
+  };
+
+  const viewBundleDetails = (bundle: any) => {
+    setSelectedBundle(bundle);
   };
 
   const renderGateway = () => (
@@ -210,7 +354,7 @@ export default function AsherLinkApp() {
       </View>
 
       {/* Footer */}
-      <Text style={styles.footer}>© 2024 Asher-Link Systems</Text>
+      <Text style={styles.footer}>© 2026 Asher. All rights reserved.</Text>
     </View>
   );
 
@@ -387,6 +531,128 @@ export default function AsherLinkApp() {
       </View>
     </ScrollView>
   );
+
+  const renderBundlesModal = () => {
+    const filtered = packages.filter((pkg) => {
+      const duration = Number(pkg.duration || 0);
+      if (bundleCategory === 'weekly') return duration > 0 && duration <= 7;
+      if (bundleCategory === 'monthly') return duration >= 8;
+      return true;
+    });
+
+    if (selectedBundle) {
+      const hasFunds = Number(balance) >= Number(selectedBundle.price || 0);
+      return (
+        <View style={{ gap: 24 }}>
+          <View style={{ borderRadius: 32, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', padding: 24, overflow: 'hidden' }}>
+            <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: '#7c3aed', marginBottom: 6 }}>Selected Package</Text>
+            <Text style={{ fontSize: 24, fontWeight: '900', textTransform: 'uppercase', color: '#0f172a', marginBottom: 6 }}>{formatActivePeriod(selectedBundle.name)}</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#64748b', marginRight: 12 }}>{selectedBundle.duration} Days</Text>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#64748b' }}>{formatActivePeriod(selectedBundle.activePeriod)}</Text>
+            </View>
+          </View>
+
+          <View style={{ gap: 12 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#e2e8f0', paddingBottom: 12 }}>
+              <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', color: '#64748b' }}>Package Price</Text>
+              <Text style={{ fontSize: 14, fontWeight: '900', color: '#0f172a' }}>R{selectedBundle.price}</Text>
+            </View>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#e2e8f0', paddingVertical: 12 }}>
+              <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', color: '#64748b' }}>Available Balance</Text>
+              <Text style={{ fontSize: 14, fontWeight: '900', color: hasFunds ? '#16a34a' : '#dc2626' }}>R{balance}</Text>
+            </View>
+          </View>
+
+          {!hasFunds ? (
+            <View style={{ borderRadius: 18, backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', padding: 16 }}>
+              <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', color: '#991b1b', marginBottom: 4 }}>Insufficient Balance</Text>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#b91c1c' }}>Please redeem a voucher pin to top up your balance before purchasing.</Text>
+            </View>
+          ) : null}
+
+          <TouchableOpacity
+            style={{ borderRadius: 999, backgroundColor: '#7c3aed', paddingVertical: 16, alignItems: 'center', justifyContent: 'center' }}
+            activeOpacity={0.8}
+            disabled={!hasFunds || loading}
+            onPress={async () => {
+              if (!selectedBundle) return;
+              setLoading(true);
+              try {
+                const result = await apiConfirmPurchase(DEFAULT_MAC, selectedBundle.name, packages);
+                if (result && (result.status === 'success' || result.status === 'ok')) {
+                  notify('Package activated successfully', 'success');
+                  await refreshData();
+                  closeModal();
+                } else {
+                  notify('Purchase failed', 'error');
+                }
+              } catch (_error) {
+                notify('Purchase failed', 'error');
+              } finally {
+                setLoading(false);
+              }
+            }}
+          >
+            <Text style={{ fontSize: 14, fontWeight: '900', textTransform: 'uppercase', color: '#ffffff' }}>Confirm & Pay</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={{ borderRadius: 999, backgroundColor: '#e2e8f0', paddingVertical: 12, alignItems: 'center', justifyContent: 'center' }}
+            activeOpacity={0.8}
+            onPress={() => renderBundlesM('all')}
+          >
+            <Text style={{ fontSize: 14, fontWeight: '900', textTransform: 'uppercase', color: '#0f172a' }}>Back to Bundles</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <View>
+        <View style={{ flexDirection: 'row', marginBottom: 24, padding: 4, backgroundColor: '#e2e8f0', borderRadius: 24 }}>
+          {['all', 'weekly', 'monthly'].map((category) => (
+            <TouchableOpacity
+              key={category}
+              activeOpacity={0.8}
+              style={{ flex: 1, borderRadius: 16, paddingVertical: 10, backgroundColor: bundleCategory === category ? '#ede9fe' : 'transparent', alignItems: 'center' }}
+              onPress={() => renderBundlesM(category)}
+            >
+              <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', textAlign: 'center', color: bundleCategory === category ? '#7c3aed' : '#94a3b8' }}>
+                {category === 'all' ? 'All' : category === 'weekly' ? 'Weekly' : 'Monthly'}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {filtered.length === 0 ? (
+          <View style={{ alignItems: 'center', paddingVertical: 48 }}>
+            <ActivityIndicator size="large" color="#a78bfa" />
+          </View>
+        ) : (
+          filtered.map((pkg) => (
+            <TouchableOpacity
+              key={pkg.name}
+              style={{ borderRadius: 32, borderWidth: 2, borderColor: '#f8fafc', backgroundColor: 'rgba(248,250,252,0.5)', padding: 24, marginBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
+              activeOpacity={0.8}
+              onPress={() => viewBundleDetails(pkg)}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ height: 40, width: 40, borderRadius: 16, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' }}>
+                  <Zap color="#a855f7" size={20} />
+                </View>
+                <View style={{ marginLeft: 16 }}>
+                  <Text style={{ fontWeight: '900', color: '#0f172a', fontSize: 14 }}>{pkg.duration} Days</Text>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#64748b' }}>Uncapped • {formatActivePeriod(pkg.activePeriod)}</Text>
+                </View>
+              </View>
+              <Text style={{ fontSize: 20, fontWeight: '900', color: '#7c3aed' }}>R{pkg.price}</Text>
+            </TouchableOpacity>
+          ))
+        )}
+      </View>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container}>

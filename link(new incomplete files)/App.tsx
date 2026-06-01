@@ -81,7 +81,7 @@ const translations = {
   }
 };
 
-const formatActivePeriod = (text) => {
+const formatActivePeriod = (text: string | string[]) => {
   if (typeof text !== 'string') return text;
   if (text.includes('in')) return `${text.slice(0, -1)} ${Number(text.slice(0, -1)) > 1 ? 'minutes' : 'minute'}`;
   if (text.includes('h')) return `${text.slice(0, -1)} ${Number(text.slice(0, -1)) > 1 ? 'hours' : 'hour'}`;
