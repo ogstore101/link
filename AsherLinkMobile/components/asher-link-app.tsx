@@ -12,7 +12,9 @@ import {
   Image,
   ImageBackground,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 import {
   Wifi,
   Plus,
@@ -29,6 +31,11 @@ import {
   Lock,
   UserPlus,
   ArrowRight,
+  Phone,
+  Package,
+  HelpCircle,
+  Star,
+  Award,
 } from 'lucide-react-native';
 import {
   confirmPurchase as apiConfirmPurchase,
@@ -40,6 +47,7 @@ import {
   startTrialAd as apiStartTrialAd
 } from '../api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NotificationToast from './NotificationToast';
 
 const BUNDLES = [
   { id: 'p1', name: 'Student Lite', volume: '1GB', price: 10, validity: '24 Hours' },
@@ -106,7 +114,7 @@ export default function AsherLinkApp() {
   const [modal, setModal] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [voucherCode, setVoucherCode] = useState('');
-  const [balance, setBalance] = useState(50.0);
+  const [balance, setBalance] = useState<number>(50.0);
   const [adCountdown, setAdCountdown] = useState(5);
   const [stats, setStats] = useState({
     remaining: '1.8 GB',
@@ -129,10 +137,10 @@ export default function AsherLinkApp() {
   const [autoConnect, setAutoConnect] = useState(false);
   const [particles, setParticles] = useState(true);
   const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState<{ id: string; name: string; joined: string; phone: string; plan: string; loggedin: boolean } | null>(null);
   const [trialActive, setTrialActive] = useState(false);
   const [trialTimer, setTrialTimer] = useState(0);
-  const [trialAdData, setTrialAdData] = useState(null);
+  const [trialAdData, setTrialAdData] = useState<any>(null);
   const isMounted = useRef(true);
   const [showPassword, setShowPassword] = useState(false);
   const [loginForm, setLoginForm] = useState({ identifier: '', password: '' });
@@ -176,28 +184,197 @@ export default function AsherLinkApp() {
   };
 
   const refreshData = useCallback(async () => {
+    if (!isMounted.current) return;
     setLoading(true);
     try {
-      const userData: any = await fetchAndRenderUserData(DEFAULT_MAC);
-      if (userData.balance !== undefined) setBalance(userData.balance);
-      if (userData.usage) {
-        setStats((prevStats) => ({
-          ...prevStats,
-          totalUsed: userData.usage.total_used || prevStats.totalUsed,
-          sessionTime: userData.usage.session_time || prevStats.sessionTime,
-          lastBundle: userData.usage.last_bundle || prevStats.lastBundle
-        }));
+      try {
+        const userData: any = await fetchAndRenderUserData(DEFAULT_MAC);
+        if (userData?.balance !== undefined) {
+          setBalance(Number(userData.balance) || 0);
+        }
+        if (userData?.usage) {
+          setStats((prevStats) => ({
+            ...prevStats,
+            totalUsed: userData.usage.total_used || prevStats.totalUsed,
+            sessionTime: userData.usage.session_time || prevStats.sessionTime,
+            lastBundle: userData.usage.last_bundle || prevStats.lastBundle
+          }));
+        }
+      } catch (e) {
+        console.warn('User data fetch failed:', e);
       }
-      const bundles = await getBundlesData();
-      setPackages(bundles.packages || []);
-      const offersData = await fetchUserOffers(DEFAULT_MAC);
-      setOffers(Array.isArray(offersData.offers) ? offersData.offers : []);
+
+      try {
+        const bundles = await getBundlesData();
+        if (isMounted.current) {
+          setPackages(bundles.packages || []);
+        }
+      } catch (e) {
+        console.warn('Bundles fetch failed:', e);
+      }
+
+      try {
+        const offersData = await fetchUserOffers(DEFAULT_MAC);
+        if (isMounted.current) {
+          setOffers(Array.isArray(offersData.offers) ? offersData.offers : []);
+        }
+      } catch (e) {
+        console.warn('Offers fetch failed:', e);
+      }
     } catch (_error) {
-      notify('Unable to refresh data', 'error');
+      console.error('refreshData error:', _error);
+    } finally {
+      if (isMounted.current) {
+        setLoading(false);
+      }
+    }
+    return undefined;
+  }, []);
+
+    useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    refreshData().catch((err) => {
+      console.error('refreshData promise rejected:', err);
+    });
+    const interval = setInterval(() => {
+      refreshData().catch((err) => {
+        console.error('refreshData interval rejected:', err);
+      });
+    }, 20000);
+    return () => clearInterval(interval);
+  }, [refreshData]);
+
+  const simulateLogin = () => {
+    const userId = `USR-${DEFAULT_MAC.replace(/:/g, '').slice(-6)}`;
+    setUser({
+      id: userId,
+      name: 'Prepaid User',
+      joined: new Date().toLocaleDateString('en-GB'),
+      phone: '072-***-****',
+      plan: 'Pro Tier',
+      loggedin: true
+    });
+    notify('Logged In', 'success');
+    closeModal();
+  };
+
+  const simulateLogout = () => {
+    setUser(null);
+    notify('Logged Out', 'success');
+    closeModal();
+  };
+
+  const updateLang = async (value: string) => {
+    setLanguage(value);
+    await savePref('language', value);
+    notify(`Language: ${value.toUpperCase()}`, 'success');
+  };
+
+  const togglePref = async (key: 'dataSaver' | 'auto_connect' | 'particles') => {
+    if (key === 'dataSaver') {
+      setDataSaver((prev) => {
+        savePref('dataSaver', !prev);
+        return !prev;
+      });
+    }
+    if (key === 'auto_connect') {
+      setAutoConnect((prev) => {
+        savePref('auto_connect', !prev);
+        return !prev;
+      });
+    }
+    if (key === 'particles') {
+      setParticles((prev) => {
+        savePref('particles', !prev);
+        return !prev;
+      });
+    }
+  };
+
+  const completeTrial = useCallback(async () => {
+    if (!trialAdData) {
+      setTrialActive(false);
+      return;
+    }
+    setTrialActive(false);
+    try {
+      const result = await apiConnectTrial(trialAdData._id || 'default', DEFAULT_MAC);
+      if (result && (result.status === 'success' || result.status === 'skipped')) {
+        notify('Connecting Trial', 'success');
+      } else {
+        notify('Ad failed', 'error');
+      }
+    } catch (_error) {
+      notify('Ad failed', 'error');
+    }
+  }, [trialAdData]);
+
+  useEffect(() => {
+    if (!trialActive || trialTimer <= 0) return;
+    const timer = setInterval(() => {
+      setTrialTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          completeTrial();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [trialActive, trialTimer, completeTrial]);
+
+  const onPressRecharge = async () => {
+    if (!voucherCode.trim()) {
+      setTokenIconColor('#dc3545');
+      notify('Enter a voucher code', 'error');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await handleVoucher(DEFAULT_MAC, voucherCode.trim());
+      if (result && result.status === 'success') {
+        notify('Successfully recharged', 'success');
+        setVoucherCode('');
+        await refreshData();
+      } else if (result && result.status === 'invalid') {
+        setTokenIconColor('#dc3545');
+        notify('Invalid Voucher', 'error');
+      } else {
+        setTokenIconColor('#dc3545');
+        notify('Unknown Error', 'error');
+      }
+    } catch (_error) {
+      setTokenIconColor('#dc3545');
+      notify('Network Error', 'error');
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
+
+  const onStartTrialAd = async () => {
+    setLoading(true);
+    try {
+      const adData = await apiStartTrialAd(DEFAULT_MAC);
+      setTrialAdData(adData);
+      const duration = Number(adData.ad_duration) || 10;
+      setTrialTimer(duration);
+      setTrialActive(true);
+      notify('Trial ad loaded', 'success');
+    } catch (_error) {
+      notify('Ad failed', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
 
 
   const handleAuth = () => {
@@ -359,107 +536,58 @@ export default function AsherLinkApp() {
   );
 
   const renderHome = () => (
-    <ScrollView
-      style={styles.tabContainer}
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={styles.tabContentPadding}
-    >
-      {/* Header with Image and Gradient */}
-      <ImageBackground
-        source={{ uri: 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&q=80&w=800' }}
-        style={styles.headerImage}
-        resizeMode="cover"
-      >
-        <View style={styles.headerGradientOverlay} />
-        <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>Asher Link</Text>
-          <View style={styles.statusIndicator}>
-            <View style={[styles.statusDot, stats.isConnected && styles.statusDotActive]} />
-            <Text style={styles.statusLabel}>
-              Status: {stats.isConnected ? 'Online' : 'Offline'}
-            </Text>
-          </View>
-        </View>
-      </ImageBackground>
+    <ScrollView className="w-full mx-auto max-w-app-margin-16">
+        <View className="relative flex flex-col items-center h-full mx-4 sm:justify-evenly sm:flex-row-reverse">
+          <View className="w-full mt-[53%] px-6 sm:w-[45%] max-w-lg card sm:m-0 z-[2]">
+            <View className="flex justify-between mb-6">
+              <Text className="mx-2 items-left text-2xl bold-header font-bold md:text-3xl gradient-text">Prepaid Wifi</Text>
+              <Text className="hidden text-[10px] uppercase tracking-wider text-slate-400 font-mono">00:00:00</Text>
+            </View>
 
-      {/* Main Stats Card */}
-      <View style={styles.mainStatsCard}>
-        <View style={styles.statsCardTop}>
-          <View>
-            <Text style={styles.statsLabel}>Data Available</Text>
-            <Text style={styles.statsValue}>{stats.remaining}</Text>
-          </View>
-          <View style={styles.balanceBox}>
-            <Text style={styles.balanceLabel}>Balance</Text>
-            <Text style={styles.balanceValue}>R{balance.toFixed(2)}</Text>
-          </View>
-        </View>
-        <View style={styles.progressBar}>
-          <View style={[styles.progressFill, { width: '64%' }]} />
-        </View>
-        <View style={styles.statsCardBottom}>
-          <View style={styles.statsCardItem}>
-            <Text style={styles.statsCardItemLabel}>Used</Text>
-            <Text style={styles.statsCardItemValue}>{stats.used}</Text>
-          </View>
-          <View style={styles.statsCardItem}>
-            <Text style={styles.statsCardItemLabel}>Expiry</Text>
-            <Text style={styles.statsCardItemValue}>{stats.daysLeft}</Text>
-          </View>
-        </View>
-      </View>
+            <Text className="mx-[.5rem] mb-6 font-semibold">Balance: R <Text className="balance-el loader font-semibold">{balance}</Text></Text>
 
-      {/* Action Grid */}
-      <View style={styles.actionsRow}>
-        <TouchableOpacity
-          style={styles.actionBtn}
-          onPress={() => setModal('adTimer')}
-        >
-          <Unlock size={18} color="#7c3aed" />
-          <Text style={styles.actionLabel}>Free Trial</Text>
-        </TouchableOpacity>
+            <View className="relative block">
+              <View className="input-label-user">
+                <Text className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 -rotate-[30deg] text-slate-400"> </Text>
+              </View>
+              <TextInput
+                value={voucherCode}
+                onChangeText={setVoucherCode}
+                placeholder="Recharge code"
+                placeholderTextColor="#94a3b8"
+                className="rounded-full pl-12 pr-4 py-2 block w-full"
+                style={{ borderColor: tokenIconColor, borderWidth: 1 }}
+                autoCapitalize="characters"
+                keyboardType={Platform.OS === 'web' ? 'default' : 'numeric'}
+              />
+            </View>
 
-        <TouchableOpacity
-          style={styles.actionBtn}
-          onPress={() => setModal('recharge')}
-        >
-          <Plus size={18} color="#7c3aed" />
-          <Text style={styles.actionLabel}>Add Funds</Text>
-        </TouchableOpacity>
+            <TouchableOpacity activeOpacity={0.8} onPress={onPressRecharge} disabled={loading} className="button py-2 w-full text-white justify-center rounded-full font-bold shadow-lg mt-[1.5rem]">
+              <Text>{loading ? 'Processing...' : 'Recharge'}</Text>
+            </TouchableOpacity>
 
-        <TouchableOpacity style={styles.actionBtn}>
-          <History size={18} color="#7c3aed" />
-          <Text style={styles.actionLabel}>Logs</Text>
-        </TouchableOpacity>
-      </View>
+            <View className="w-full ml-5 flex flex-col gap-3 z-50 mt-[1.5rem] h-[2.5rem]">
+              <View className="flex gap-5 text-center">
+                <TouchableOpacity activeOpacity={0.8} className="flex inline-flex items-center gap-2 text-sm bg-neutral-50 py-1 px-3 rounded-full border border-neutral-300 font-semibold" onPress={() => loadUserPackages()}>
+                  <Text>WiFi Bundles</Text>
+                </TouchableOpacity>
+                <TouchableOpacity activeOpacity={0.8} className="flex inline-flex items-center gap-2 text-sm bg-neutral-50 py-1 px-3 rounded-full border border-neutral-300 font-semibold" onPress={() => openModal('free')}>
+                  <Text>Free wifi</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
 
-      {/* Special Offers */}
-      <View style={styles.offersSection}>
-        <View style={styles.sectionHeader}>
-          <Zap size={14} color="#dc2626" />
-          <Text style={styles.sectionTitle}>Special Offers</Text>
-        </View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.offersScroll}
-        >
-          {OFFERS.map(offer => (
-            <View key={offer.id} style={styles.offerCard}>
-              <Text style={styles.offerTitle}>{offer.title}</Text>
-              <Text style={styles.offerDesc}>{offer.desc}</Text>
-              <TouchableOpacity
-                style={styles.offerCTA}
-                onPress={() => setActiveTab('bundles')}
-              >
-                <Text style={styles.offerCTAText}>Activate Now</Text>
-                <ChevronRight size={12} color="#fff" />
+            <View className="mt-2 mx-2 mb-4 flex flex-col space-y-[1rem] text-base">
+              <TouchableOpacity className="block text-slate-500 hover:text-slate-900 transition flex items-center gap-1" activeOpacity={0.8} onPress={() => openModal('login')}>
+                <Text className="mr-2">Account Login</Text>
+              </TouchableOpacity>
+              <TouchableOpacity className="block text-slate-500 hover:text-slate-900 transition flex items-center gap-1" activeOpacity={0.8} onPress={() => openModal('menu')}>
+                <Text>Menu</Text>
               </TouchableOpacity>
             </View>
-          ))}
-        </ScrollView>
-      </View>
-    </ScrollView>
+          </View>
+        </View>
+      </ScrollView>
   );
 
   const renderBundles = () => (
@@ -489,6 +617,77 @@ export default function AsherLinkApp() {
         </View>
       ))}
     </ScrollView>
+  );
+
+  const renderHelpModal = () => (
+    <View style={{ gap: 16 }}>
+      <View style={{ gap: 12, marginBottom: 24 }}>
+        {[
+          { question: 'Voucher not working?', answer: `Ensure you have entered all characters correctly. Avoid spaces at the start or end. If it still fails, contact support with your MAC ID: ${DEFAULT_MAC}.` },
+          { question: 'Slow connection?', answer: 'Try moving closer to the nearest wifi antenna. Walls and buildings can reduce signal strength. Restart your WiFi and reconnect.' },
+          { question: 'How to check balance?', answer: "Your balance is displayed on the main dashboard. Click the refresh icon next to the balance if it hasn't updated after a recharge." }
+        ].map((item) => (
+          <View key={item.question} style={{ borderBottomWidth: 1, borderBottomColor: '#e2e8f0', paddingBottom: 12, marginBottom: 12 }}>
+            <TouchableOpacity activeOpacity={0.8} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={{ fontSize: 14, fontWeight: '900', color: '#0f172a' }}>{item.question}</Text>
+              <ChevronRight color="#64748b" size={18} />
+            </TouchableOpacity>
+            <Text style={{ fontSize: 12, color: '#64748b', marginTop: 8 }}>{item.answer}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 12 }}>
+        <TouchableOpacity
+          style={{ width: '48%', borderRadius: 24, backgroundColor: '#ecfdf5', padding: 16, alignItems: 'center' }}
+          activeOpacity={0.8}
+          onPress={() => Linking.openURL('tel:0695060875')}
+        >
+          <Phone color="#15803d" size={22} />
+          <Text style={{ marginTop: 8, fontSize: 10, fontWeight: '900', textTransform: 'uppercase', color: '#047857' }}>Call</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={{ width: '48%', borderRadius: 24, backgroundColor: '#0f172a', padding: 16, alignItems: 'center' }}
+          activeOpacity={0.8}
+          onPress={() => Linking.openURL('http://wa.me/27695060875')}
+        >
+          <Zap color="#a855f7" size={22} />
+          <Text style={{ marginTop: 8, fontSize: 10, fontWeight: '900', textTransform: 'uppercase', color: '#fff' }}>WhatsApp</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderUsageModal = () => (
+    <View style={{ gap: 20 }}>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 12 }}>
+        <View style={{ width: '48%', borderRadius: 40, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', padding: 24 }}>
+          <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', marginBottom: 8 }}>Total Used</Text>
+          <Text style={{ fontSize: 24, fontWeight: '900', color: '#0f172a' }}>{stats.totalUsed}</Text>
+        </View>
+        <View style={{ width: '48%', borderRadius: 40, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0', padding: 24 }}>
+          <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', marginBottom: 8 }}>Active Time</Text>
+          <Text style={{ fontSize: 24, fontWeight: '900', color: '#0f172a' }}>{stats.sessionTime}</Text>
+        </View>
+      </View>
+      <View style={{ borderRadius: 40, backgroundColor: 'rgba(245,237,255,0.8)', borderWidth: 1, borderColor: '#e9d5ff', padding: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <View>
+          <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: '#7c3aed', marginBottom: 6 }}>Last Bundle</Text>
+          <Text style={{ fontSize: 14, fontWeight: '900', textTransform: 'uppercase', color: '#0f172a' }}>{stats.lastBundle}</Text>
+        </View>
+        <View style={{ height: 48, width: 48, borderRadius: 20, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' }}>
+          <History color="#a855f7" size={24} />
+        </View>
+      </View>
+      {user ? (
+        <View style={{ borderRadius: 24, backgroundColor: '#0f172a', padding: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View>
+            <Text style={{ fontSize: 8, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1, color: '#94a3b8', marginBottom: 6 }}>User Level</Text>
+            <Text style={{ fontSize: 12, fontWeight: '900', textTransform: 'uppercase', color: '#fff' }}>{user.plan} Member</Text>
+          </View>
+          <Award color="#a855f7" size={24} />
+        </View>
+      ) : null}
+    </View>
   );
 
   const renderSettings = () => (
@@ -530,6 +729,95 @@ export default function AsherLinkApp() {
         </TouchableOpacity>
       </View>
     </ScrollView>
+  );
+
+  const renderMenuModal = () => (
+      <View style={{ gap: 20 }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 12, marginBottom: 24 }}>
+          {[
+            { icon: Package, label: 'Bundles', action: loadUserPackages },
+            { icon: Activity, label: 'Usage', action: () => openModal('usage') },
+            { icon: User, label: 'Account', action: () => openModal('login') },
+            { icon: History, label: 'Transactions', action: () => openModal('soon') },
+            { icon: Zap, label: 'Transfer', action: () => openModal('soon') },
+            { icon: HelpCircle, label: 'Help', action: () => openModal('help') }
+          ].map((item) => (
+            <TouchableOpacity
+              key={item.label}
+              activeOpacity={0.8}
+              style={{ width: '48%', borderRadius: 24, borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: 'rgba(248,250,252,0.6)', padding: 24, alignItems: 'center' }}
+              onPress={item.action}
+            >
+              <item.icon color="#a855f7" size={24} />
+              <Text style={{ marginTop: 12, fontSize: 10, fontWeight: '900', textTransform: 'uppercase', color: '#0f172a' }}>{item.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <View style={{ marginBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8 }}>
+          <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: '#64748b' }}>Exclusive Offers</Text>
+          <Text style={{ fontSize: 10, fontWeight: '900', textTransform: 'uppercase', color: '#2563eb' }}>More Offers</Text>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ gap: 12, paddingBottom: 8 }}>
+          {offers.length ? offers.map((offer, index) => (
+            <View key={`${offer.title || 'offer'}-${index}`} style={{ minWidth: 240, borderRadius: 40, backgroundColor: '#0f172a', padding: 20, overflow: 'hidden' }}>
+              <View style={{ position: 'absolute', right: -16, top: -16, height: 96, width: 96, borderRadius: 48, backgroundColor: 'rgba(168,85,247,0.2)' }} />
+              <View style={{ position: 'relative', zIndex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, backgroundColor: '#a855f7', marginBottom: 12 }}>
+                  <Star color="#ffffff" size={10} />
+                  <Text style={{ fontSize: 8, fontWeight: '900', textTransform: 'uppercase', color: '#fff' }}>Offer</Text>
+                </View>
+                <Text style={{ fontSize: 14, fontWeight: '900', textTransform: 'uppercase', color: '#fff', marginBottom: 8 }}>{offer.title || offer.name || 'Offer'}</Text>
+                <Text style={{ fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, color: '#cbd5e1', marginBottom: 16 }}>{offer.description || ''}</Text>
+                <TouchableOpacity
+                  style={{ borderRadius: 18, backgroundColor: '#a855f7', paddingVertical: 12, alignItems: 'center' }}
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    if (offer.link) {
+                      Linking.openURL(offer.link);
+                    } else {
+                      openModal('bundles');
+                    }
+                  }}
+                >
+                  <Text style={{ fontSize: 9, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, color: '#fff' }}>{offer.cta || 'View'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )) : (
+            <View style={{ borderRadius: 24, backgroundColor: '#0f172a', padding: 16 }}>
+              <Text style={{ fontSize: 14, color: '#94a3b8' }}>No offers available right now.</Text>
+            </View>
+          )}
+        </ScrollView>
+      </View>
+  );
+
+  const renderSoonModal = () => (
+    <View style={{ padding: 24 }}>
+      <Text style={{ fontSize: 18, fontWeight: '900', color: '#0f172a' }}>Coming soon</Text>
+      <Text style={{ marginTop: 12, fontSize: 14, color: '#64748b' }}>This feature is not available yet.</Text>
+    </View>
+  );
+
+  const renderFreeModal = () => (
+    <View style={{ padding: 24 }}>
+      <Text style={{ fontSize: 18, fontWeight: '900', color: '#0f172a' }}>Free Trial</Text>
+      <Text style={{ marginTop: 12, fontSize: 14, color: '#64748b' }}>Start a free trial from the dashboard.</Text>
+    </View>
+  );
+
+  const renderSettingsModal = () => (
+    <View style={{ padding: 24 }}>
+      <Text style={{ fontSize: 18, fontWeight: '900', color: '#0f172a' }}>Settings</Text>
+      <Text style={{ marginTop: 12, fontSize: 14, color: '#64748b' }}>Manage your preferences from the settings tab.</Text>
+    </View>
+  );
+
+  const renderLoginModal = () => (
+    <View style={{ padding: 24 }}>
+      <Text style={{ fontSize: 18, fontWeight: '900', color: '#0f172a' }}>Login</Text>
+      <Text style={{ marginTop: 12, fontSize: 14, color: '#64748b' }}>Use the login screen to access your account.</Text>
+    </View>
   );
 
   const renderBundlesModal = () => {
@@ -654,16 +942,66 @@ export default function AsherLinkApp() {
     );
   };
 
+  const renderModalBody = () => {
+    switch (modalKind) {
+      case 'soon':
+        return renderSoonModal();
+      case 'bundles':
+        return renderBundlesModal();
+      case 'free':
+        return renderFreeModal();
+      case 'help':
+        return renderHelpModal();
+      case 'usage':
+        return renderUsageModal();
+      case 'settings':
+        return renderSettingsModal();
+      case 'menu':
+        return renderMenuModal();
+      case 'login':
+        return renderLoginModal();
+      default:
+        return renderSoonModal();
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
+      <StatusBar style="light" />
       {view === 'gateway' ? (
         renderGateway()
       ) : (
+        
         <View style={styles.dashboardContainer}>
           
           {activeTab === 'home' && renderHome()}
           {activeTab === 'bundles' && renderBundles()}
           {activeTab === 'settings' && renderSettings()}
+
+          <View className="pb-2 mx-auto max-w-app-margin-12 topNav">
+          <View className="pt-2 mx-4 min-[480px]:mx-8 sm:mx-12">
+            <View nativeID="navbar__top" className="flex items-center justify-between">
+              <Text className="backdrop-blur rounded-xl p-2 text-2xl font-bold">Asher-link Kasi Wifi</Text>
+              <View className="hidden gap-12 md:flex">
+                <TouchableOpacity activeOpacity={0.8} className="flex items-center justify-center">
+                  <Text className="hover:underline">Bundles</Text>
+                </TouchableOpacity>
+                <TouchableOpacity activeOpacity={0.8} className="flex items-center justify-center">
+                  <Text className="hover:underline">Packages</Text>
+                </TouchableOpacity>
+              </View>
+              <View className="flex backdrop-blur items-center justify-center rounded-xl md:hidden">
+                <View className="backdrop-blur rounded-xl py-1 px-2">
+                  <Text>R </Text>
+                  <Text className="font-bold balance-el loader">{balance}</Text>
+                </View>
+              </View>
+              <TouchableOpacity activeOpacity={0.8} accessibilityLabel="data-contact-button" className="hidden py-4 px-7 button button-secondary md:block w-max">
+                <Text>Sign in</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
 
           <View style={styles.bottomNav}>
             <TouchableOpacity
@@ -739,6 +1077,29 @@ export default function AsherLinkApp() {
         </View>
       </Modal>
 
+      <Modal visible={modal === 'modalBody'} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {modalKind === 'usage' && 'Usage'}
+                {modalKind === 'help' && 'Help'}
+                {modalKind === 'menu' && 'Menu'}
+                {modalKind === 'settings' && 'Settings'}
+                {modalKind === 'login' && 'Account'}
+                {modalKind === 'bundles' && 'Bundles'}
+                {modalKind === 'free' && 'Free Trial'}
+                {!['usage', 'help', 'menu', 'settings', 'login', 'bundles', 'free'].includes(modalKind) && 'Info'}
+              </Text>
+              <TouchableOpacity onPress={() => setModal(null)}>
+                <Text style={styles.closeBtn}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            {renderModalBody()}
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={modal === 'adTimer'} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.timerModal}>
@@ -756,7 +1117,55 @@ export default function AsherLinkApp() {
           </View>
         </View>
       </Modal>
+          <Modal visible={modalVisible} animationType="slide" transparent>
+        <View className="flex-1 bg-black/60 justify-end sm:justify-center items-center p-6">
+          <View className="w-full sm:max-w-md max-h-[85vh] bg-white rounded-t-3xl sm:rounded-3xl p-6 overflow-hidden">
+            <View className="flex-row items-center justify-between mb-4">
+              <View className="flex-row items-center gap-3">
+                <View className="bg-slate-100 rounded-xl p-3">
+                  {modalKind === 'soon' && <Clock color="#0f172a" size={24} />}
+                  {modalKind === 'bundles' && <Package color="#0f172a" size={24} />}
+                  {modalKind === 'free' && <Gift color="#0f172a" size={24} />}
+                  {modalKind === 'help' && <HelpCircle color="#0f172a" size={24} />}
+                  {modalKind === 'usage' && <Activity color="#0f172a" size={24} />}
+                  {modalKind === 'settings' && <Settings color="#0f172a" size={24} />}
+                  {modalKind === 'menu' && <LayoutGrid color="#0f172a" size={24} />}
+                  {modalKind === 'login' && <User color="#0f172a" size={24} />}
+                </View>
+                <Text className="text-lg font-black text-slate-900">
+                  {modalKind === 'soon' ? 'Coming Soon' :
+                   modalKind === 'bundles' ? 'WiFi Bundles' :
+                   modalKind === 'free' ? 'Free WiFi' :
+                   modalKind === 'help' ? 'Support & FAQ' :
+                   modalKind === 'usage' ? 'WiFi Usage' :
+                   modalKind === 'settings' ? t.settings :
+                   modalKind === 'menu' ? 'Menu' :
+                   modalKind === 'login' ? 'Account Login' : 'Coming Soon'}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={closeModal} activeOpacity={0.8}>
+                <X color="#475569" size={24} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} className="flex-1">
+              {renderModalBody()}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={trialActive} animationType="fade" transparent>
+        <View className="flex-1 bg-black/60 justify-center items-center">
+          <View className="w-full max-w-sm bg-slate-900 rounded-2xl p-6 items-center">
+            <Text className="text-white font-black text-lg mb-4">Connecting in...</Text>
+            <Text className="text-white font-black text-6xl mb-4">{trialTimer}</Text>
+            <Text className="text-slate-400 text-sm text-center">Complete the ad watch to unlock your free session.</Text>
+          </View>
+        </View>
+      </Modal>
+      {toast ? <NotificationToast message={toast.message} type={toast.type} /> : null}
     </SafeAreaView>
+
   );
 }
 
@@ -1106,8 +1515,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   tabContentPadding: {
-    paddingHorizontal: 16,
     paddingBottom: 100,
+  },
+  tabContentInnerPadding: {
+    paddingHorizontal: 12,
   },
   actionsRow: {
     flexDirection: 'row',
